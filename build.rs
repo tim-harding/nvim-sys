@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     env, fmt, fs,
-    path::Path,
+    path::{Path, Prefix},
     process::{Command, Stdio},
 };
 
@@ -27,7 +27,7 @@ fn main() {
         .unwrap();
     let mut stdout = nvim.stdout.take().unwrap();
     let root: Root = from_read(stdout).unwrap();
-    warn!("{:?}", root);
+    // warn!("{:?}", root);
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("nvim.rs");
@@ -79,7 +79,7 @@ struct Function {
     method: bool,
     name: String,
     parameters: Vec<Parameter>,
-    return_type: String,
+    return_type: TypeName,
     since: u64,
     deprecated_since: Option<u64>,
 }
@@ -93,7 +93,7 @@ struct UiEvent {
 
 #[derive(Debug)]
 struct Parameter {
-    type_name: String,
+    type_name: TypeName,
     name: String,
 }
 
@@ -127,5 +127,70 @@ impl<'de> Visitor<'de> for ParameterVisitor {
                 .next_element()?
                 .ok_or_else(|| de::Error::invalid_length(0, &self))?,
         })
+    }
+}
+
+#[derive(Debug)]
+enum TypeName {
+    FixedArray { size: u64, type_name: String },
+    DynamicArray(String),
+    Other(String),
+}
+
+impl<'de> Deserialize<'de> for TypeName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_string(TypeNameVisitor)
+    }
+}
+
+struct TypeNameVisitor;
+
+impl<'de> Visitor<'de> for TypeNameVisitor {
+    type Value = TypeName;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        const PREFIX: &str = "ArrayOf(";
+        const SEP: &str = ", ";
+        let is_array = v
+            .chars()
+            .zip(PREFIX.chars())
+            .all(|(actual, expected)| actual == expected) && v.len() > PREFIX.len();
+
+        if is_array {
+            let type_name: String = v
+                .chars()
+                .skip(PREFIX.chars().count())
+                .take_while(|c| c.is_ascii_alphabetic())
+                .collect();
+
+            let is_fixed = v
+                .chars()
+                .skip(PREFIX.chars().count() + type_name.chars().count())
+                .zip(SEP.chars())
+                .all(|(actual, expected)| actual == expected);
+            if is_fixed {
+                let size: String = v
+                    .chars()
+                    .skip(PREFIX.chars().count() + type_name.chars().count() + SEP.chars().count())
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                let size: u64 = size.parse().unwrap();
+                Ok(TypeName::FixedArray { size, type_name })
+            } else {
+                Ok(TypeName::DynamicArray(type_name))
+            }
+        } else {
+            Ok(TypeName::Other(v.to_string()))
+        }
     }
 }
