@@ -1,5 +1,5 @@
 [package]
-name = "nvim-api"
+name = "nvim-sys"
 version = "0.9.2"
 edition = "2021"
 

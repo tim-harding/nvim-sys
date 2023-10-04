@@ -1,11 +1,17 @@
+#![allow(unused)]
+
 use std::{
-    env, fs,
+    collections::HashMap,
+    env, fmt, fs,
     path::Path,
     process::{Command, Stdio},
 };
 
 use rmp_serde::from_read;
-use serde::Deserialize;
+use serde::{
+    de::{self, SeqAccess, Visitor},
+    Deserialize,
+};
 
 macro_rules! warn {
     ($($tokens: tt)*) => {
@@ -39,6 +45,11 @@ fn main() {
 #[derive(Debug, Deserialize)]
 struct Root {
     version: Version,
+    error_types: HashMap<String, ErrorType>,
+    types: HashMap<String, Type>,
+    functions: Vec<Function>,
+    ui_options: Vec<String>,
+    ui_events: Vec<UiEvent>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,4 +61,71 @@ struct Version {
     minor: u64,
     patch: u64,
     prerelease: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ErrorType {
+    id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct Type {
+    id: u64,
+    prefix: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Function {
+    method: bool,
+    name: String,
+    parameters: Vec<Parameter>,
+    return_type: String,
+    since: u64,
+    deprecated_since: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UiEvent {
+    name: String,
+    parameters: Vec<Parameter>,
+    since: u64,
+}
+
+#[derive(Debug)]
+struct Parameter {
+    type_name: String,
+    name: String,
+}
+
+impl<'de> Deserialize<'de> for Parameter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_tuple(2, ParameterVisitor)
+    }
+}
+
+struct ParameterVisitor;
+
+impl<'de> Visitor<'de> for ParameterVisitor {
+    type Value = Parameter;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a fixed-length array of size 2")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Parameter, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        Ok(Parameter {
+            type_name: seq
+                .next_element()?
+                .ok_or_else(|| de::Error::invalid_length(0, &self))?,
+            name: seq
+                .next_element()?
+                .ok_or_else(|| de::Error::invalid_length(0, &self))?,
+        })
+    }
 }
