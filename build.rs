@@ -38,7 +38,7 @@ fn main() -> Result<(), MainError> {
         .spawn()?;
     let mut stdout = nvim.stdout.take().ok_or(MainError::NvimStdout)?;
     let root: Root = from_read(stdout)?;
-    warn!("{:?}", root.types);
+    // warn!("{:?}", root.ui_options);
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir).join("nvim.rs");
@@ -46,7 +46,43 @@ fn main() -> Result<(), MainError> {
     write_error_types(&mut out_file, &root.error_types)?;
     write_version(&mut out_file, &root.version)?;
     write_types(&mut out_file, &root.types)?;
+    write_ui_options(&mut out_file, &root.ui_options)?;
     println!("cargo:rerun-if-changed=build.rs");
+    Ok(())
+}
+
+fn write_ui_options(dst: &mut impl Write, ui_options: &[String]) -> io::Result<()> {
+    let enum_names: Vec<_> = ui_options
+        .iter()
+        .map(|option| {
+            option
+                .split('_')
+                .flat_map(|part| {
+                    let mut chars = part.chars();
+                    let first = chars.next().map(|c| c.to_uppercase());
+                    first.into_iter().flatten().chain(chars)
+                })
+                .collect::<String>()
+        })
+        .collect();
+
+    write!(dst, "pub enum UiOption {{\n")?;
+    for enum_name in enum_names.iter() {
+        write!(dst, "{enum_name},\n")?;
+    }
+    write!(
+        dst,
+        "}}
+
+        impl From<UiOption> for &str {{
+            fn from(value: UiOption) -> Self {{
+                match value {{
+        "
+    )?;
+    for (enum_name, name) in enum_names.iter().zip(ui_options.iter()) {
+        write!(dst, "UiOption::{enum_name} => \"{name}\",")?;
+    }
+    write!(dst, "}} }} }}")?;
     Ok(())
 }
 
