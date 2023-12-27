@@ -44,7 +44,42 @@ fn main() -> Result<(), MainError> {
     let out_path = Path::new(&out_dir).join("nvim.rs");
     let mut out_file = File::create(out_path)?;
     write_error_types(&mut out_file, &root.error_types)?;
+    write_version(&mut out_file, &root.version)?;
     println!("cargo:rerun-if-changed=build.rs");
+    Ok(())
+}
+
+fn write_version(dst: &mut impl Write, version: &Version) -> io::Result<()> {
+    write!(
+        dst,
+        "pub struct Version {{
+        pub api_compatible: u64,
+        pub api_level: u64,
+        pub api_prerelease: bool,
+        pub major: u64,
+        pub minor: u64,
+        pub patch: u64,
+        pub prerelease: bool,
+    }}
+    impl Version {{
+        pub const CURRENT: Self = Self {{
+            api_compatible: {},
+            api_level: {},
+            api_prerelease: {},
+            major: {},
+            minor: {},
+            patch: {},
+            prerelease: {},
+        }};
+    }}",
+        version.api_compatible,
+        version.api_level,
+        version.api_prerelease,
+        version.major,
+        version.minor,
+        version.patch,
+        version.prerelease
+    )?;
     Ok(())
 }
 
