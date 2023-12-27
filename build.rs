@@ -38,14 +38,32 @@ fn main() -> Result<(), MainError> {
         .spawn()?;
     let mut stdout = nvim.stdout.take().ok_or(MainError::NvimStdout)?;
     let root: Root = from_read(stdout)?;
-    // warn!("{:?}", root.error_types);
+    warn!("{:?}", root.types);
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir).join("nvim.rs");
     let mut out_file = File::create(out_path)?;
     write_error_types(&mut out_file, &root.error_types)?;
     write_version(&mut out_file, &root.version)?;
+    write_types(&mut out_file, &root.types)?;
     println!("cargo:rerun-if-changed=build.rs");
+    Ok(())
+}
+
+fn write_types(dst: &mut impl Write, types: &Types) -> io::Result<()> {
+    for (name, t) in types.into_iter() {
+        write!(
+            dst,
+            "pub struct {name} {{
+                pub data: i64,
+            }}
+
+            impl {name} {{
+                pub const ID: i64 = {};
+            }}",
+            t.id
+        )?;
+    }
     Ok(())
 }
 
@@ -53,25 +71,25 @@ fn write_version(dst: &mut impl Write, version: &Version) -> io::Result<()> {
     write!(
         dst,
         "pub struct Version {{
-        pub api_compatible: u64,
-        pub api_level: u64,
-        pub api_prerelease: bool,
-        pub major: u64,
-        pub minor: u64,
-        pub patch: u64,
-        pub prerelease: bool,
-    }}
-    impl Version {{
-        pub const CURRENT: Self = Self {{
-            api_compatible: {},
-            api_level: {},
-            api_prerelease: {},
-            major: {},
-            minor: {},
-            patch: {},
-            prerelease: {},
-        }};
-    }}",
+            pub api_compatible: i64,
+            pub api_level: i64,
+            pub api_prerelease: bool,
+            pub major: i64,
+            pub minor: i64,
+            pub patch: i64,
+            pub prerelease: bool,
+        }}
+        impl Version {{
+            pub const CURRENT: Self = Self {{
+                api_compatible: {},
+                api_level: {},
+                api_prerelease: {},
+                major: {},
+                minor: {},
+                patch: {},
+                prerelease: {},
+            }};
+        }}",
         version.api_compatible,
         version.api_level,
         version.api_prerelease,
@@ -93,12 +111,13 @@ fn write_error_types(dst: &mut impl Write, error_types: &ErrorTypes) -> io::Resu
 }
 
 type ErrorTypes = HashMap<String, ErrorType>;
+type Types = HashMap<String, Type>;
 
 #[derive(Debug, Deserialize)]
 struct Root {
     version: Version,
     error_types: ErrorTypes,
-    types: HashMap<String, Type>,
+    types: Types,
     functions: Vec<Function>,
     ui_options: Vec<String>,
     ui_events: Vec<UiEvent>,
@@ -106,23 +125,23 @@ struct Root {
 
 #[derive(Debug, Deserialize)]
 struct Version {
-    api_compatible: u64,
-    api_level: u64,
+    api_compatible: i64,
+    api_level: i64,
     api_prerelease: bool,
-    major: u64,
-    minor: u64,
-    patch: u64,
+    major: i64,
+    minor: i64,
+    patch: i64,
     prerelease: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct ErrorType {
-    id: u64,
+    id: i64,
 }
 
 #[derive(Debug, Deserialize)]
 struct Type {
-    id: u64,
+    id: i64,
     prefix: String,
 }
 
@@ -132,15 +151,15 @@ struct Function {
     name: String,
     parameters: Vec<Parameter>,
     return_type: TypeName,
-    since: u64,
-    deprecated_since: Option<u64>,
+    since: i64,
+    deprecated_since: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct UiEvent {
     name: String,
     parameters: Vec<Parameter>,
-    since: u64,
+    since: i64,
 }
 
 #[derive(Debug)]
@@ -184,7 +203,7 @@ impl<'de> Visitor<'de> for ParameterVisitor {
 
 #[derive(Debug)]
 enum TypeName {
-    FixedArray { size: u64, type_name: String },
+    FixedArray { size: i64, type_name: String },
     DynamicArray(String),
     Other(String),
 }
@@ -237,7 +256,7 @@ impl<'de> Visitor<'de> for TypeNameVisitor {
                     .skip(PREFIX.chars().count() + type_name.chars().count() + SEP.chars().count())
                     .take_while(|c| c.is_ascii_digit())
                     .collect();
-                let size: u64 = size.parse().unwrap();
+                let size: i64 = size.parse().unwrap();
                 Ok(TypeName::FixedArray { size, type_name })
             } else {
                 Ok(TypeName::DynamicArray(type_name))
