@@ -2,7 +2,9 @@
 
 use std::{
     collections::HashMap,
-    env, fmt, fs,
+    env, fmt,
+    fs::{self, File},
+    io::{self, Write},
     path::{Path, Prefix},
     process::{Command, Stdio},
 };
@@ -19,33 +21,48 @@ macro_rules! warn {
     }
 }
 
-fn main() {
+#[derive(Debug, thiserror::Error)]
+enum MainError {
+    #[error("{0}")]
+    Io(#[from] io::Error),
+    #[error("Missing nvim stdout")]
+    NvimStdout,
+    #[error("{0}")]
+    Rmp(#[from] rmp_serde::decode::Error),
+}
+
+fn main() -> Result<(), MainError> {
     let mut nvim = Command::new("nvim")
         .arg("--api-info")
         .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdout = nvim.stdout.take().unwrap();
-    let root: Root = from_read(stdout).unwrap();
-    // warn!("{:?}", root);
+        .spawn()?;
+    let mut stdout = nvim.stdout.take().ok_or(MainError::NvimStdout)?;
+    let root: Root = from_read(stdout)?;
+    // warn!("{:?}", root.error_types);
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
-    let dest_path = Path::new(&out_dir).join("nvim.rs");
-    fs::write(
-        &dest_path,
-        "pub fn message() -> &'static str {
-            \"Hello, World!\"
-        }
-        ",
-    )
-    .unwrap();
+    let out_path = Path::new(&out_dir).join("nvim.rs");
+    let mut out_file = File::create(out_path)?;
+    write_error_types(&mut out_file, &root.error_types)?;
     println!("cargo:rerun-if-changed=build.rs");
+    Ok(())
 }
+
+fn write_error_types(dst: &mut impl Write, error_types: &ErrorTypes) -> io::Result<()> {
+    write!(dst, "pub enum Error {{\n")?;
+    for (name, t) in error_types.iter() {
+        write!(dst, "{name} = {},", t.id)?;
+    }
+    write!(dst, "}}\n")?;
+    Ok(())
+}
+
+type ErrorTypes = HashMap<String, ErrorType>;
 
 #[derive(Debug, Deserialize)]
 struct Root {
     version: Version,
-    error_types: HashMap<String, ErrorType>,
+    error_types: ErrorTypes,
     types: HashMap<String, Type>,
     functions: Vec<Function>,
     ui_options: Vec<String>,
@@ -164,7 +181,8 @@ impl<'de> Visitor<'de> for TypeNameVisitor {
         let is_array = v
             .chars()
             .zip(PREFIX.chars())
-            .all(|(actual, expected)| actual == expected) && v.len() > PREFIX.len();
+            .all(|(actual, expected)| actual == expected)
+            && v.len() > PREFIX.len();
 
         if is_array {
             let type_name: String = v
