@@ -38,7 +38,7 @@ fn main() -> Result<(), MainError> {
         .spawn()?;
     let mut stdout = nvim.stdout.take().ok_or(MainError::NvimStdout)?;
     let root: Root = from_read(stdout)?;
-    // warn!("{:?}", root.ui_options);
+    // warn!("{:?}", root.functions);
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir).join("nvim.rs");
@@ -51,20 +51,45 @@ fn main() -> Result<(), MainError> {
     Ok(())
 }
 
-fn write_ui_options(dst: &mut impl Write, ui_options: &[String]) -> io::Result<()> {
-    let enum_names: Vec<_> = ui_options
+// NOTE: The API metadata does not detail UI events enough for this to be useful
+#[allow(unused)]
+fn write_ui_events(dst: &mut impl Write, ui_events: &[UiEvent]) -> io::Result<()> {
+    let snake_names: Vec<_> = ui_events
         .iter()
-        .map(|option| {
-            option
-                .split('_')
-                .flat_map(|part| {
-                    let mut chars = part.chars();
-                    let first = chars.next().map(|c| c.to_uppercase());
-                    first.into_iter().flatten().chain(chars)
-                })
-                .collect::<String>()
-        })
+        .map(|event| snake_to_camel(&event.name))
         .collect();
+    write!(dst, "mod ui_event {{")?;
+    for (event, snake) in ui_events.iter().zip(snake_names.iter()) {
+        write!(dst, "pub struct {snake} {{")?;
+        for parameter in event.parameters.iter() {
+            write!(dst, "pub {}", parameter.name)?;
+        }
+        write!(
+            dst,
+            "}} 
+        impl {snake} {{
+        pub const SINCE: i64 = {};
+        }}
+        ",
+            event.since
+        )?;
+    }
+    write!(dst, "}}")?;
+    Ok(())
+}
+
+fn snake_to_camel(s: &str) -> String {
+    s.split('_')
+        .flat_map(|part| {
+            let mut chars = part.chars();
+            let first = chars.next().map(|c| c.to_uppercase());
+            first.into_iter().flatten().chain(chars)
+        })
+        .collect()
+}
+
+fn write_ui_options(dst: &mut impl Write, ui_options: &[String]) -> io::Result<()> {
+    let enum_names: Vec<_> = ui_options.iter().map(|s| snake_to_camel(s)).collect();
 
     write!(dst, "pub enum UiOption {{\n")?;
     for enum_name in enum_names.iter() {
