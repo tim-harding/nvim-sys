@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     env, fmt,
     fs::{self, File},
-    io::{self, Write},
+    io::{self, BufWriter, Write},
     path::{Path, Prefix},
     process::{Command, Stdio},
 };
@@ -38,44 +38,104 @@ fn main() -> Result<(), MainError> {
         .spawn()?;
     let mut stdout = nvim.stdout.take().ok_or(MainError::NvimStdout)?;
     let root: Root = from_read(stdout)?;
-    // warn!("{:?}", root.functions);
 
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir).join("nvim.rs");
-    let mut out_file = File::create(out_path)?;
-    write_error_types(&mut out_file, &root.error_types)?;
-    write_version(&mut out_file, &root.version)?;
-    write_types(&mut out_file, &root.types)?;
-    write_ui_options(&mut out_file, &root.ui_options)?;
+    let out_file = File::create(out_path)?;
+    let mut w = BufWriter::new(out_file);
+    write_version(&mut w, &root.version)?;
+    write_functions(&mut w, &root.functions)?;
     println!("cargo:rerun-if-changed=build.rs");
     Ok(())
 }
 
-// NOTE: The API metadata does not detail UI events enough for this to be useful
-#[allow(unused)]
-fn write_ui_events(dst: &mut impl Write, ui_events: &[UiEvent]) -> io::Result<()> {
-    let snake_names: Vec<_> = ui_events
-        .iter()
-        .map(|event| snake_to_camel(&event.name))
-        .collect();
-    write!(dst, "mod ui_event {{")?;
-    for (event, snake) in ui_events.iter().zip(snake_names.iter()) {
-        write!(dst, "pub struct {snake} {{")?;
-        for parameter in event.parameters.iter() {
-            write!(dst, "pub {}", parameter.name)?;
+fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<()> {
+    // TODO: Method, since, deprecated since
+    write!(
+        dst,
+        "pub mod functions {{
+        use super::{{Buffer, Window, Tabpage, Array, BasicType, Dictionary}};"
+    )?;
+    for function in functions.iter() {
+        if function
+            .parameters
+            .iter()
+            .find(|&p| match &p.type_name {
+                TypeName::Other(type_name) => type_name.as_str() == "LuaRef",
+                _ => false,
+            })
+            .is_some()
+        {
+            continue;
         }
-        write!(
-            dst,
-            "}} 
-        impl {snake} {{
-        pub const SINCE: i64 = {};
-        }}
-        ",
-            event.since
-        )?;
+
+        write!(dst, "#[allow(unused)] pub async fn {}(", function.name)?;
+        for parameter in function.parameters.iter() {
+            let name = match parameter.name.as_str() {
+                "fn" => "r#fn",
+                "type" => "r#type",
+                other => other,
+            };
+            write!(dst, "{name}: ")?;
+            match &parameter.type_name {
+                TypeName::FixedArray { size, type_name } => {
+                    write!(dst, "[{}; {size}]", type_name_borrowed(type_name))?
+                }
+                TypeName::DynamicArray(type_name) => {
+                    write!(dst, "&[{}]", type_name_borrowed(type_name))?
+                }
+                TypeName::Other(type_name) => write!(dst, "{}", type_name_borrowed(type_name))?,
+            }
+            write!(dst, ", ")?;
+        }
+        write!(dst, ") ");
+        match &function.return_type {
+            TypeName::FixedArray { size, type_name } => write!(
+                dst,
+                "-> [{}; {size}]",
+                type_name_owned(type_name, &function.name)
+            )?,
+            TypeName::DynamicArray(type_name) => write!(
+                dst,
+                "-> Vec<{}>",
+                type_name_owned(type_name, &function.name)
+            )?,
+            TypeName::Other(type_name) => match type_name.as_str() {
+                "void" => {}
+                _ => write!(dst, "-> {}", type_name_owned(type_name, &function.name))?,
+            },
+        }
+        write!(dst, "{{ todo!() }}\n")?;
     }
     write!(dst, "}}")?;
     Ok(())
+}
+
+fn type_name_borrowed(type_name: &str) -> &str {
+    match type_name {
+        "Boolean" => "bool",
+        "Integer" => "i64",
+        "Float" => "f64",
+        "String" => "&str",
+        "Object" => "BasicType",
+        _ => type_name,
+    }
+}
+
+fn type_name_owned<'a>(type_name: &'a str, function_name: &'a str) -> &'a str {
+    match type_name {
+        "Boolean" => "bool",
+        "Integer" => "i64",
+        "Float" => "f64",
+        "Object" => {
+            if function_name.chars().take(6).eq("window".chars()) {
+                "Window"
+            } else {
+                "BasicType"
+            }
+        }
+        _ => type_name,
+    }
 }
 
 fn snake_to_camel(s: &str) -> String {
@@ -88,58 +148,10 @@ fn snake_to_camel(s: &str) -> String {
         .collect()
 }
 
-fn write_ui_options(dst: &mut impl Write, ui_options: &[String]) -> io::Result<()> {
-    let enum_names: Vec<_> = ui_options.iter().map(|s| snake_to_camel(s)).collect();
-
-    write!(dst, "pub enum UiOption {{\n")?;
-    for enum_name in enum_names.iter() {
-        write!(dst, "{enum_name},\n")?;
-    }
-    write!(
-        dst,
-        "}}
-
-        impl From<UiOption> for &str {{
-            fn from(value: UiOption) -> Self {{
-                match value {{
-        "
-    )?;
-    for (enum_name, name) in enum_names.iter().zip(ui_options.iter()) {
-        write!(dst, "UiOption::{enum_name} => \"{name}\",")?;
-    }
-    write!(dst, "}} }} }}")?;
-    Ok(())
-}
-
-fn write_types(dst: &mut impl Write, types: &Types) -> io::Result<()> {
-    for (name, t) in types.into_iter() {
-        write!(
-            dst,
-            "pub struct {name} {{
-                pub data: i64,
-            }}
-
-            impl {name} {{
-                pub const ID: i64 = {};
-            }}",
-            t.id
-        )?;
-    }
-    Ok(())
-}
-
 fn write_version(dst: &mut impl Write, version: &Version) -> io::Result<()> {
     write!(
         dst,
-        "pub struct Version {{
-            pub api_compatible: i64,
-            pub api_level: i64,
-            pub api_prerelease: bool,
-            pub major: i64,
-            pub minor: i64,
-            pub patch: i64,
-            pub prerelease: bool,
-        }}
+        "
         impl Version {{
             pub const CURRENT: Self = Self {{
                 api_compatible: {},
@@ -159,15 +171,6 @@ fn write_version(dst: &mut impl Write, version: &Version) -> io::Result<()> {
         version.patch,
         version.prerelease
     )?;
-    Ok(())
-}
-
-fn write_error_types(dst: &mut impl Write, error_types: &ErrorTypes) -> io::Result<()> {
-    write!(dst, "pub enum Error {{\n")?;
-    for (name, t) in error_types.iter() {
-        write!(dst, "{name} = {},", t.id)?;
-    }
-    write!(dst, "}}\n")?;
     Ok(())
 }
 
