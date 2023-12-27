@@ -79,12 +79,16 @@ fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<(
             write!(dst, "{name}: ")?;
             match &parameter.type_name {
                 TypeName::FixedArray { size, type_name } => {
-                    write!(dst, "[{}; {size}]", type_name_borrowed(type_name))?
+                    write!(dst, "[{}; {size}]", map_parameter_type_name(type_name))?
                 }
-                TypeName::DynamicArray(type_name) => {
-                    write!(dst, "&[{}]", type_name_borrowed(type_name))?
+                TypeName::DynamicArray(type_name) => write!(
+                    dst,
+                    "impl Iterator<Item = {}>",
+                    map_parameter_type_name(type_name)
+                )?,
+                TypeName::Other(type_name) => {
+                    write!(dst, "{}", map_parameter_type_name(type_name))?
                 }
-                TypeName::Other(type_name) => write!(dst, "{}", type_name_borrowed(type_name))?,
             }
             write!(dst, ", ")?;
         }
@@ -93,16 +97,20 @@ fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<(
             TypeName::FixedArray { size, type_name } => write!(
                 dst,
                 "-> [{}; {size}]",
-                type_name_owned(type_name, &function.name)
+                map_return_type_name(type_name, &function.name)
             )?,
             TypeName::DynamicArray(type_name) => write!(
                 dst,
                 "-> Vec<{}>",
-                type_name_owned(type_name, &function.name)
+                map_return_type_name(type_name, &function.name)
             )?,
             TypeName::Other(type_name) => match type_name.as_str() {
                 "void" => {}
-                _ => write!(dst, "-> {}", type_name_owned(type_name, &function.name))?,
+                _ => write!(
+                    dst,
+                    "-> {}",
+                    map_return_type_name(type_name, &function.name)
+                )?,
             },
         }
         write!(dst, "{{ todo!() }}\n")?;
@@ -111,7 +119,7 @@ fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<(
     Ok(())
 }
 
-fn type_name_borrowed(type_name: &str) -> &str {
+fn map_parameter_type_name(type_name: &str) -> &str {
     match type_name {
         "Boolean" => "bool",
         "Integer" => "i64",
@@ -122,7 +130,7 @@ fn type_name_borrowed(type_name: &str) -> &str {
     }
 }
 
-fn type_name_owned<'a>(type_name: &'a str, function_name: &'a str) -> &'a str {
+fn map_return_type_name<'a>(type_name: &'a str, function_name: &'a str) -> &'a str {
     match type_name {
         "Boolean" => "bool",
         "Integer" => "i64",
@@ -130,6 +138,10 @@ fn type_name_owned<'a>(type_name: &'a str, function_name: &'a str) -> &'a str {
         "Object" => {
             if function_name.chars().take(6).eq("window".chars()) {
                 "Window"
+            } else if function_name.chars().take(7).eq("tabpage".chars()) {
+                "Tabpage"
+            } else if function_name.chars().take(6).eq("buffer".chars()) {
+                "Buffer"
             } else {
                 "BasicType"
             }
