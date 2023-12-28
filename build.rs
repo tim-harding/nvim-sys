@@ -69,7 +69,11 @@ fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<(
             continue;
         }
 
-        write!(dst, "#[allow(unused)] pub async fn {}(", function.name)?;
+        write!(
+            dst,
+            "pub async fn {}(neovim: impl &mut Neovim, ",
+            function.name
+        )?;
         for parameter in function.parameters.iter() {
             let name = match parameter.name.as_str() {
                 "fn" => "r#fn",
@@ -113,7 +117,12 @@ fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<(
                 )?,
             },
         }
-        write!(dst, "{{ todo!() }}\n")?;
+        write!(
+            dst,
+            "{{ 
+                todo!()
+            }}\n"
+        )?;
     }
     write!(dst, "}}")?;
     Ok(())

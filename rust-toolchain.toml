@@ -1,0 +1,3 @@
+[toolchain]
+# Just until async is allowed in traits (1.75)
+channel = "nightly"
