@@ -54,7 +54,7 @@ fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<(
     write!(
         dst,
         "pub mod functions {{
-        use super::{{Buffer, Window, Tabpage, Array, BasicType, Dictionary}};"
+        use super::{{Buffer, Window, Tabpage, Array, BasicType, Dictionary, Neovim}};"
     )?;
     for function in functions.iter() {
         if function
@@ -71,7 +71,7 @@ fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<(
 
         write!(
             dst,
-            "pub async fn {}(neovim: impl &mut Neovim, ",
+            "#[allow(unused)] pub async fn {}(neovim: &mut impl Neovim, ",
             function.name
         )?;
         for parameter in function.parameters.iter() {

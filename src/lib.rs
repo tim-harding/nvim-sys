@@ -1,8 +1,10 @@
-use rmp::decode::ValueReadError;
+use rmp::{
+    decode::{MarkerReadError, ValueReadError},
+    encode::ValueWriteError,
+};
 use std::{
     collections::HashMap,
-    fmt::Write,
-    io::{self, Read},
+    io::{self, Read, Write},
     string::FromUtf8Error,
 };
 
@@ -20,6 +22,7 @@ pub enum BasicType {
     Object(SpecialType),
 }
 
+#[derive(Debug)]
 pub enum BasicTypeKind {
     Nil,
     Boolean,
@@ -31,14 +34,105 @@ pub enum BasicTypeKind {
     Object,
 }
 
-trait FromMsgpack {
+pub trait ToMsgpack {
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ToMsgpackError {
+    #[error("{0}")]
+    Io(#[from] io::Error),
+    #[error("{0}")]
+    Rmp(#[from] ValueWriteError),
+}
+
+impl ToMsgpack for bool {
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        rmp::encode::write_bool(w, self)?;
+        Ok(())
+    }
+}
+
+impl ToMsgpack for i64 {
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        rmp::encode::write_sint(w, self)?;
+        Ok(())
+    }
+}
+
+impl ToMsgpack for f64 {
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        rmp::encode::write_f64(w, self)?;
+        Ok(())
+    }
+}
+
+impl ToMsgpack for &str {
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        rmp::encode::write_str(w, self)?;
+        Ok(())
+    }
+}
+
+pub struct MsgpackArrayWriter<T, I>
+where
+    T: ToMsgpack,
+    I: Iterator<Item = T>,
+{
+    len: u32,
+    iter: I,
+}
+
+impl<T, I> ToMsgpack for MsgpackArrayWriter<T, I>
+where
+    T: ToMsgpack,
+    I: Iterator<Item = T>,
+{
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        rmp::encode::write_array_len(w, self.len)?;
+        for t in self.iter {
+            t.to_msgpack(w)?;
+        }
+        Ok(())
+    }
+}
+
+pub struct MsgpackDictionaryWriter<K, V, I>
+where
+    K: ToMsgpack,
+    V: ToMsgpack,
+    I: Iterator<Item = (K, V)>,
+{
+    len: u32,
+    iter: I,
+}
+
+impl<K, V, I> ToMsgpack for MsgpackDictionaryWriter<K, V, I>
+where
+    K: ToMsgpack,
+    V: ToMsgpack,
+    I: Iterator<Item = (K, V)>,
+{
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        rmp::encode::write_map_len(w, self.len)?;
+        for (k, v) in self.iter {
+            k.to_msgpack(w)?;
+            v.to_msgpack(w)?;
+        }
+        Ok(())
+    }
+}
+
+pub trait FromMsgpack: Sized {
     fn from_msgpack(r: &mut impl Read) -> Result<Self, FromMsgpackError>;
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum FromMsgpackError {
     #[error("{0}")]
-    Rmp(#[from] ValueReadError<io::Error>),
+    ValueRead(#[from] ValueReadError<io::Error>),
+    #[error("Failed to read marker: {0}")]
+    MarkerRead(io::Error),
     #[error("{0}")]
     Io(#[from] io::Error),
     #[error("{0}")]
@@ -48,6 +142,12 @@ pub enum FromMsgpackError {
         expected: BasicTypeKind,
         actual: rmp::Marker,
     },
+}
+
+impl From<MarkerReadError<io::Error>> for FromMsgpackError {
+    fn from(value: MarkerReadError<io::Error>) -> Self {
+        Self::MarkerRead(value.0)
+    }
 }
 
 impl FromMsgpack for bool {
@@ -64,7 +164,7 @@ impl FromMsgpack for bool {
 }
 
 impl FromMsgpack for i64 {
-    fn from_msgpack(r: &mut impl Read) -> Result<Self, ValueReadError> {
+    fn from_msgpack(r: &mut impl Read) -> Result<Self, FromMsgpackError> {
         match rmp::decode::read_marker(r)? {
             rmp::Marker::U8 => Ok(rmp::decode::read_u8(r)? as i64),
             rmp::Marker::U16 => Ok(rmp::decode::read_u16(r)? as i64),
@@ -99,13 +199,15 @@ impl FromMsgpack for String {
     fn from_msgpack(r: &mut impl Read) -> Result<Self, FromMsgpackError> {
         let len = match rmp::decode::read_marker(r)? {
             rmp::Marker::FixStr(len) => len as usize,
-            rmp::Marker::Str8 => read_u8(r)?,
-            rmp::Marker::Str16 => read_u16(r)?,
-            rmp::Marker::Str32 => read_u32(r)?,
-            marker => Err(FromMsgpackError::Marker {
-                expected: BasicTypeKind::String,
-                actual: marker,
-            }),
+            rmp::Marker::Str8 => read_u8(r)? as usize,
+            rmp::Marker::Str16 => read_u16(r)? as usize,
+            rmp::Marker::Str32 => read_u32(r)? as usize,
+            marker => {
+                return Err(FromMsgpackError::Marker {
+                    expected: BasicTypeKind::String,
+                    actual: marker,
+                })
+            }
         };
 
         let mut buf = vec![0; len];
@@ -123,10 +225,12 @@ where
             rmp::Marker::FixArray(len) => len as usize,
             rmp::Marker::Array16 => read_u16(r)? as usize,
             rmp::Marker::Array32 => read_u32(r)? as usize,
-            marker => Err(FromMsgpackError::Marker {
-                expected: BasicTypeKind::Array,
-                actual: marker,
-            }),
+            marker => {
+                return Err(FromMsgpackError::Marker {
+                    expected: BasicTypeKind::Array,
+                    actual: marker,
+                })
+            }
         };
 
         (0..len).map(|_| T::from_msgpack(r)).collect()
@@ -135,7 +239,7 @@ where
 
 impl<K, V> FromMsgpack for HashMap<K, V>
 where
-    K: FromMsgpack,
+    K: FromMsgpack + Eq + std::hash::Hash,
     V: FromMsgpack,
 {
     fn from_msgpack(r: &mut impl Read) -> Result<Self, FromMsgpackError> {
@@ -143,14 +247,16 @@ where
             rmp::Marker::FixMap(len) => len as usize,
             rmp::Marker::Map16 => read_u16(r)? as usize,
             rmp::Marker::Map32 => read_u32(r)? as usize,
-            marker => Err(FromMsgpackError::Marker {
-                expected: BasicTypeKind::Dictionary,
-                actual: marker,
-            }),
+            marker => {
+                return Err(FromMsgpackError::Marker {
+                    expected: BasicTypeKind::Dictionary,
+                    actual: marker,
+                })
+            }
         };
 
         (0..len)
-            .map(|_| (K::from_msgpack(r)?, V::from_msgpack(r)?))
+            .map(|_| -> Result<_, _> { Ok((K::from_msgpack(r)?, V::from_msgpack(r)?)) })
             .collect()
     }
 }
@@ -202,12 +308,53 @@ pub struct Buffer {
     pub bufnr: i64,
 }
 
+impl Buffer {
+    pub const TYPE_ID: i8 = 0;
+}
+
+impl ToMsgpack for Buffer {
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        write_special_type(w, Self::TYPE_ID, self.bufnr)?;
+        Ok(())
+    }
+}
+
 pub struct Window {
     pub window_id: i64,
 }
 
+impl Window {
+    pub const TYPE_ID: i8 = 1;
+}
+
+impl ToMsgpack for Window {
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        write_special_type(w, Self::TYPE_ID, self.window_id)?;
+        Ok(())
+    }
+}
+
 pub struct Tabpage {
     pub handle: i64,
+}
+
+impl Tabpage {
+    pub const TYPE_ID: i8 = 2;
+}
+
+impl ToMsgpack for Tabpage {
+    fn to_msgpack(self, w: &mut impl Write) -> Result<(), ToMsgpackError> {
+        write_special_type(w, Self::TYPE_ID, self.handle)?;
+        Ok(())
+    }
+}
+
+fn write_special_type(w: &mut impl Write, type_id: i8, data: i64) -> Result<(), ToMsgpackError> {
+    // TODO: Elide leading zero bytes
+    let data = data.to_be_bytes();
+    rmp::encode::write_ext_meta(w, 8, type_id)?;
+    w.write(&data)?;
+    Ok(())
 }
 
 pub struct Version {
