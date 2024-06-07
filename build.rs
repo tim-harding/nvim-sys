@@ -57,15 +57,10 @@ fn write_functions(dst: &mut impl Write, functions: &[Function]) -> io::Result<(
         use super::{{Buffer, Window, Tabpage, Array, BasicType, Dictionary, Neovim}};"
     )?;
     for function in functions.iter() {
-        if function
-            .parameters
-            .iter()
-            .find(|&p| match &p.type_name {
-                TypeName::Other(type_name) => type_name.as_str() == "LuaRef",
-                _ => false,
-            })
-            .is_some()
-        {
+        if function.parameters.iter().any(|p| match &p.type_name {
+            TypeName::Other(type_name) => type_name.as_str() == "LuaRef",
+            _ => false,
+        }) {
             continue;
         }
 
